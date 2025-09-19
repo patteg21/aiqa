@@ -34,10 +34,16 @@ from browser_use.llm.messages import SystemMessage, UserMessage
 from browser_use.observability import observe_debug
 from browser_use.tools.registry.service import Registry
 from browser_use.tools.views import (
+	AnalyzeRecentUserActivityAction,
 	ClickElementAction,
 	CloseTabAction,
 	DoneAction,
 	GetDropdownOptionsAction,
+	GetNetworkRequestsAction,
+	GetNetworkSummaryAction,
+	GetRequestsByUISectionAction,
+	GetUIActivitySummaryAction,
+	GetUserTriggeredRequestsAction,
 	GoToUrlAction,
 	InputTextAction,
 	NoParamsAction,
@@ -1022,6 +1028,141 @@ You can also use it to explore the website.
 				# CDP communication or other system errors
 				error_msg = f'Code: {code}\n\nError: {error_msg} Failed to execute JavaScript: {type(e).__name__}: {e}'
 				logger.info(error_msg)
+				return ActionResult(error=error_msg)
+
+		# Network Monitoring Actions
+		@self.registry.action(
+			'Get recent network requests made by the browser. Use request_type to filter: "api" for API calls, "ui" for UI resources, "failed" for failed requests, or None for all.',
+			param_model=GetNetworkRequestsAction,
+		)
+		async def get_network_requests(params: GetNetworkRequestsAction, browser_session: BrowserSession):
+			try:
+				requests = browser_session.get_network_requests(limit=params.limit, request_type=params.request_type)
+				memory = f'Retrieved {len(requests)} network requests'
+				result = f'Network Requests ({len(requests)} found):\n'
+				for i, req in enumerate(requests, 1):
+					status = f"✅ {req['response_status']}" if req.get('response_status', 0) < 400 else f"❌ {req.get('response_status', 'Failed')}"
+					duration = f"{req['duration']:.2f}s" if req.get('duration') else "N/A"
+					result += f"{i}. {status} {req['method']} {req['url'][:100]}...\n"
+					result += f"   Duration: {duration}, UI Section: {req.get('ui_section', 'Unknown')}\n"
+					if req.get('likely_ui_trigger'):
+						result += f"   Trigger: {req['likely_ui_trigger']}\n"
+					result += "\n"
+				logger.info(f'📊 {memory}')
+				return ActionResult(extracted_content=result, long_term_memory=memory)
+			except Exception as e:
+				error_msg = f'Failed to get network requests: {str(e)}'
+				return ActionResult(error=error_msg)
+
+		@self.registry.action(
+			'Get summary statistics of network activity including total requests, API calls, failed requests, and success rate.',
+			param_model=GetNetworkSummaryAction,
+		)
+		async def get_network_summary(_: GetNetworkSummaryAction, browser_session: BrowserSession):
+			try:
+				summary = browser_session.get_network_summary()
+				memory = f'Retrieved network summary: {summary["total_completed"]} total requests'
+				result = f"""Network Activity Summary:
+- Total requests: {summary['total_completed']}
+- API requests: {summary['api_requests']}
+- Failed requests: {summary['failed_requests']}
+- Active requests: {summary['active_requests']}
+- Success rate: {summary['success_rate']:.1f}%"""
+				logger.info(f'📊 {memory}')
+				return ActionResult(extracted_content=result, long_term_memory=memory)
+			except Exception as e:
+				error_msg = f'Failed to get network summary: {str(e)}'
+				return ActionResult(error=error_msg)
+
+		@self.registry.action(
+			'Get network requests that were triggered by user interactions (clicks, form submissions, etc.)',
+			param_model=GetUserTriggeredRequestsAction,
+		)
+		async def get_user_triggered_requests(params: GetUserTriggeredRequestsAction, browser_session: BrowserSession):
+			try:
+				requests = browser_session.get_user_triggered_requests(limit=params.limit)
+				memory = f'Retrieved {len(requests)} user-triggered requests'
+				result = f'User-Triggered Requests ({len(requests)} found):\n'
+				for i, req in enumerate(requests, 1):
+					status = f"✅ {req['response_status']}" if req.get('response_status', 0) < 400 else f"❌ {req.get('response_status', 'Failed')}"
+					result += f"{i}. {status} {req['method']} {req['url'][:80]}...\n"
+					result += f"   Trigger: {req.get('likely_ui_trigger', 'Unknown')}\n"
+					result += f"   UI Section: {req.get('ui_section', 'Unknown')}\n\n"
+				logger.info(f'👤 {memory}')
+				return ActionResult(extracted_content=result, long_term_memory=memory)
+			except Exception as e:
+				error_msg = f'Failed to get user-triggered requests: {str(e)}'
+				return ActionResult(error=error_msg)
+
+		@self.registry.action(
+			'Analyze recent user activity and network requests within a specified time window.',
+			param_model=AnalyzeRecentUserActivityAction,
+		)
+		async def analyze_recent_user_activity(params: AnalyzeRecentUserActivityAction, browser_session: BrowserSession):
+			try:
+				analysis = browser_session.analyze_recent_user_activity(seconds_back=params.seconds_back)
+				memory = f'Analyzed recent activity: {analysis["total_requests"]} requests in last {params.seconds_back}s'
+				result = f"""Recent Activity Analysis (last {params.seconds_back}s):
+- Total requests: {analysis['total_requests']}
+- User-triggered: {analysis['user_triggered_requests']}
+- API calls: {analysis['api_calls']}
+- Failed requests: {analysis['failed_requests']}
+
+Recent User Actions:"""
+				if analysis.get('recent_user_actions'):
+					for i, action in enumerate(analysis['recent_user_actions'], 1):
+						status = f"✅ {action['status']}" if action.get('status', 0) < 400 else f"❌ {action.get('status', 'Failed')}"
+						duration = f"{action['duration']:.2f}s" if action.get('duration') else "N/A"
+						result += f"\n{i}. {status} {action['url'][:60]}... ({duration})"
+						result += f"\n   Trigger: {action.get('trigger', 'Unknown')}"
+				else:
+					result += "\n(No recent user actions found)"
+				logger.info(f'📈 {memory}')
+				return ActionResult(extracted_content=result, long_term_memory=memory)
+			except Exception as e:
+				error_msg = f'Failed to analyze recent user activity: {str(e)}'
+				return ActionResult(error=error_msg)
+
+		@self.registry.action(
+			'Get network requests filtered by UI section (e.g., "header", "sidebar", "main", "footer")',
+			param_model=GetRequestsByUISectionAction,
+		)
+		async def get_requests_by_ui_section(params: GetRequestsByUISectionAction, browser_session: BrowserSession):
+			try:
+				requests = browser_session.get_requests_by_ui_section(params.section_pattern, limit=params.limit)
+				memory = f'Retrieved {len(requests)} requests from {params.section_pattern} section'
+				result = f'Requests from "{params.section_pattern}" UI section ({len(requests)} found):\n'
+				for i, req in enumerate(requests, 1):
+					status = f"✅ {req['response_status']}" if req.get('response_status', 0) < 400 else f"❌ {req.get('response_status', 'Failed')}"
+					duration = f"{req['duration']:.2f}s" if req.get('duration') else "N/A"
+					result += f"{i}. {status} {req['method']} {req['url'][:80]}...\n"
+					result += f"   Duration: {duration}, Full Section: {req.get('ui_section', 'Unknown')}\n\n"
+				logger.info(f'🔍 {memory}')
+				return ActionResult(extracted_content=result, long_term_memory=memory)
+			except Exception as e:
+				error_msg = f'Failed to get requests by UI section: {str(e)}'
+				return ActionResult(error=error_msg)
+
+		@self.registry.action(
+			'Get summary of network activity grouped by UI sections to understand which parts of the interface are most active.',
+			param_model=GetUIActivitySummaryAction,
+		)
+		async def get_ui_activity_summary(_: GetUIActivitySummaryAction, browser_session: BrowserSession):
+			try:
+				summary = browser_session.get_ui_activity_summary()
+				memory = f'Retrieved UI activity summary: {summary["total_sections"]} active sections'
+				result = f"""UI Activity Summary:
+- Active sections: {summary['total_sections']}"""
+				if summary.get('most_active_section'):
+					most_active = summary['most_active_section']
+					result += f"\n- Most active: {most_active[0]} ({most_active[1]} requests)"
+				result += f"\n\nSection breakdown:"
+				for section, count in summary.get('section_breakdown', {}).items():
+					result += f"\n  {section}: {count} requests"
+				logger.info(f'🎨 {memory}')
+				return ActionResult(extracted_content=result, long_term_memory=memory)
+			except Exception as e:
+				error_msg = f'Failed to get UI activity summary: {str(e)}'
 				return ActionResult(error=error_msg)
 
 	# Custom done action for structured output

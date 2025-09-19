@@ -91,3 +91,32 @@ class GetDropdownOptionsAction(BaseModel):
 class SelectDropdownOptionAction(BaseModel):
 	index: int = Field(ge=1, description='index of the dropdown element to select an option for')
 	text: str = Field(description='the text or exact value of the option to select')
+
+
+# Network Monitoring Actions
+class GetNetworkRequestsAction(BaseModel):
+	limit: int = Field(default=10, ge=1, le=50, description='maximum number of requests to return')
+	request_type: str | None = Field(default=None, description='filter by request type: "api", "ui", "failed", or None for all')
+
+
+class GetNetworkSummaryAction(BaseModel):
+	"""Get summary statistics of network activity"""
+	pass
+
+
+class GetUserTriggeredRequestsAction(BaseModel):
+	limit: int = Field(default=10, ge=1, le=50, description='maximum number of requests to return')
+
+
+class AnalyzeRecentUserActivityAction(BaseModel):
+	seconds_back: int = Field(default=30, ge=1, le=300, description='how many seconds back to analyze')
+
+
+class GetRequestsByUISectionAction(BaseModel):
+	section_pattern: str = Field(description='UI section pattern to filter by (e.g., "header", "sidebar", "main")')
+	limit: int = Field(default=10, ge=1, le=50, description='maximum number of requests to return')
+
+
+class GetUIActivitySummaryAction(BaseModel):
+	"""Get summary of network activity grouped by UI section"""
+	pass

@@ -1,7 +1,6 @@
-"""Browser watchdog for monitoring crashes and network timeouts using CDP."""
+"""Browser watchdog for monitoring crashes using CDP."""
 
 import asyncio
-import time
 from typing import TYPE_CHECKING, ClassVar
 
 import psutil
@@ -22,19 +21,9 @@ if TYPE_CHECKING:
 	pass
 
 
-class NetworkRequestTracker:
-	"""Tracks ongoing network requests."""
-
-	def __init__(self, request_id: str, start_time: float, url: str, method: str, resource_type: str | None = None):
-		self.request_id = request_id
-		self.start_time = start_time
-		self.url = url
-		self.method = method
-		self.resource_type = resource_type
-
 
 class CrashWatchdog(BaseWatchdog):
-	"""Monitors browser health for crashes and network timeouts using CDP."""
+	"""Monitors browser health for crashes using CDP."""
 
 	# Event contracts
 	LISTENS_TO: ClassVar[list[type[BaseEvent]]] = [
@@ -45,11 +34,9 @@ class CrashWatchdog(BaseWatchdog):
 	EMITS: ClassVar[list[type[BaseEvent]]] = [BrowserErrorEvent]
 
 	# Configuration
-	network_timeout_seconds: float = Field(default=10.0)
 	check_interval_seconds: float = Field(default=5.0)  # Reduced frequency to reduce noise
 
 	# Private state
-	_active_requests: dict[str, NetworkRequestTracker] = PrivateAttr(default_factory=dict)
 	_monitoring_task: asyncio.Task | None = PrivateAttr(default=None)
 	_last_responsive_checks: dict[str, float] = PrivateAttr(default_factory=dict)  # target_url -> timestamp
 	_cdp_event_tasks: set[asyncio.Task] = PrivateAttr(default_factory=set)  # Track CDP event handler tasks
@@ -83,30 +70,6 @@ class CrashWatchdog(BaseWatchdog):
 				self.logger.debug(f'[CrashWatchdog] Event listeners already exist for session: {cdp_session.session_id}')
 				return
 
-			# Set up network event handlers
-			# def on_request_will_be_sent(event):
-			# 	# Create and track the task
-			# 	task = asyncio.create_task(self._on_request_cdp(event))
-			# 	self._cdp_event_tasks.add(task)
-			# 	# Remove from set when done
-			# 	task.add_done_callback(lambda t: self._cdp_event_tasks.discard(t))
-
-			# def on_response_received(event):
-			# 	self._on_response_cdp(event)
-
-			# def on_loading_failed(event):
-			# 	self._on_request_failed_cdp(event)
-
-			# def on_loading_finished(event):
-			# 	self._on_request_finished_cdp(event)
-
-			# Register event handlers
-			# TEMPORARILY DISABLED: Network events causing too much logging
-			# cdp_client.on('Network.requestWillBeSent', on_request_will_be_sent, session_id=session_id)
-			# cdp_client.on('Network.responseReceived', on_response_received, session_id=session_id)
-			# cdp_client.on('Network.loadingFailed', on_loading_failed, session_id=session_id)
-			# cdp_client.on('Network.loadingFinished', on_loading_finished, session_id=session_id)
-
 			def on_target_crashed(event: TargetCrashedEvent, session_id: SessionID | None = None):
 				# Create and track the task
 				task = asyncio.create_task(self._on_target_crash_cdp(target_id))
@@ -128,43 +91,6 @@ class CrashWatchdog(BaseWatchdog):
 		except Exception as e:
 			self.logger.warning(f'[CrashWatchdog] Failed to attach to target {target_id}: {e}')
 
-	async def _on_request_cdp(self, event: dict) -> None:
-		"""Track new network request from CDP event."""
-		request_id = event.get('requestId', '')
-		request = event.get('request', {})
-
-		self._active_requests[request_id] = NetworkRequestTracker(
-			request_id=request_id,
-			start_time=time.time(),
-			url=request.get('url', ''),
-			method=request.get('method', ''),
-			resource_type=event.get('type'),
-		)
-		# logger.debug(f'[CrashWatchdog] Tracking request: {request.get("method", "")} {request.get("url", "")[:50]}...')
-
-	def _on_response_cdp(self, event: dict) -> None:
-		"""Remove request from tracking on response."""
-		request_id = event.get('requestId', '')
-		if request_id in self._active_requests:
-			elapsed = time.time() - self._active_requests[request_id].start_time
-			response = event.get('response', {})
-			self.logger.debug(f'[CrashWatchdog] Request completed in {elapsed:.2f}s: {response.get("url", "")[:50]}...')
-			# Don't remove yet - wait for loadingFinished
-
-	def _on_request_failed_cdp(self, event: dict) -> None:
-		"""Remove request from tracking on failure."""
-		request_id = event.get('requestId', '')
-		if request_id in self._active_requests:
-			elapsed = time.time() - self._active_requests[request_id].start_time
-			self.logger.debug(
-				f'[CrashWatchdog] Request failed after {elapsed:.2f}s: {self._active_requests[request_id].url[:50]}...'
-			)
-			del self._active_requests[request_id]
-
-	def _on_request_finished_cdp(self, event: dict) -> None:
-		"""Remove request from tracking when loading is finished."""
-		request_id = event.get('requestId', '')
-		self._active_requests.pop(request_id, None)
 
 	async def _on_target_crash_cdp(self, target_id: TargetID) -> None:
 		"""Handle target crash detected via CDP."""
@@ -231,7 +157,6 @@ class CrashWatchdog(BaseWatchdog):
 		self._cdp_event_tasks.clear()
 
 		# Clear tracking (CDP sessions are cached and managed by BrowserSession)
-		self._active_requests.clear()
 		self._sessions_with_listeners.clear()
 
 	async def _monitoring_loop(self) -> None:
@@ -239,55 +164,12 @@ class CrashWatchdog(BaseWatchdog):
 		await asyncio.sleep(10)  # give browser time to start up and load the first page after first LLM call
 		while True:
 			try:
-				await self._check_network_timeouts()
 				await self._check_browser_health()
 				await asyncio.sleep(self.check_interval_seconds)
 			except asyncio.CancelledError:
 				break
 			except Exception as e:
 				self.logger.error(f'[CrashWatchdog] Error in monitoring loop: {e}')
-
-	async def _check_network_timeouts(self) -> None:
-		"""Check for network requests exceeding timeout."""
-		current_time = time.time()
-		timed_out_requests = []
-
-		# Debug logging
-		if self._active_requests:
-			self.logger.debug(
-				f'[CrashWatchdog] Checking {len(self._active_requests)} active requests for timeouts (threshold: {self.network_timeout_seconds}s)'
-			)
-
-		for request_id, tracker in self._active_requests.items():
-			elapsed = current_time - tracker.start_time
-			self.logger.debug(
-				f'[CrashWatchdog] Request {tracker.url[:30]}... elapsed: {elapsed:.1f}s, timeout: {self.network_timeout_seconds}s'
-			)
-			if elapsed >= self.network_timeout_seconds:
-				timed_out_requests.append((request_id, tracker))
-
-		# Emit events for timed out requests
-		for request_id, tracker in timed_out_requests:
-			self.logger.warning(
-				f'[CrashWatchdog] Network request timeout after {self.network_timeout_seconds}s: '
-				f'{tracker.method} {tracker.url[:100]}...'
-			)
-
-			self.event_bus.dispatch(
-				BrowserErrorEvent(
-					error_type='NetworkTimeout',
-					message=f'Network request timed out after {self.network_timeout_seconds}s',
-					details={
-						'url': tracker.url,
-						'method': tracker.method,
-						'resource_type': tracker.resource_type,
-						'elapsed_seconds': current_time - tracker.start_time,
-					},
-				)
-			)
-
-			# Remove from tracking
-			del self._active_requests[request_id]
 
 	async def _check_browser_health(self) -> None:
 		"""Check if browser and targets are still responsive."""

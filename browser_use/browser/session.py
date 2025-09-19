@@ -346,6 +346,7 @@ class BrowserSession(BaseModel):
 
 	# Watchdogs
 	_crash_watchdog: Any | None = PrivateAttr(default=None)
+	_network_watchdog: Any | None = PrivateAttr(default=None)
 	_downloads_watchdog: Any | None = PrivateAttr(default=None)
 	_aboutblank_watchdog: Any | None = PrivateAttr(default=None)
 	_security_watchdog: Any | None = PrivateAttr(default=None)
@@ -413,6 +414,7 @@ class BrowserSession(BaseModel):
 			self.browser_profile.cdp_url = None
 
 		self._crash_watchdog = None
+		self._network_watchdog = None
 		self._downloads_watchdog = None
 		self._aboutblank_watchdog = None
 		self._security_watchdog = None
@@ -1008,6 +1010,7 @@ class BrowserSession(BaseModel):
 		from browser_use.browser.watchdogs.aboutblank_watchdog import AboutBlankWatchdog
 
 		# from browser_use.browser.crash_watchdog import CrashWatchdog
+		from browser_use.browser.watchdogs.network_watchdog import NetworkWatchdog
 		from browser_use.browser.watchdogs.default_action_watchdog import DefaultActionWatchdog
 		from browser_use.browser.watchdogs.dom_watchdog import DOMWatchdog
 		from browser_use.browser.watchdogs.downloads_watchdog import DownloadsWatchdog
@@ -1025,6 +1028,12 @@ class BrowserSession(BaseModel):
 		# self.event_bus.on(BrowserConnectedEvent, self._crash_watchdog.on_BrowserConnectedEvent)
 		# self.event_bus.on(BrowserStoppedEvent, self._crash_watchdog.on_BrowserStoppedEvent)
 		# self._crash_watchdog.attach_to_session()
+
+		# Initialize NetworkWatchdog (monitors network requests for agent analysis)
+		NetworkWatchdog.model_rebuild()
+		self._network_watchdog = NetworkWatchdog(event_bus=self.event_bus, browser_session=self)
+		self._network_watchdog.attach_to_session()
+		self.logger.info('🌐 NetworkWatchdog enabled for request monitoring')
 
 		# Initialize DownloadsWatchdog
 		DownloadsWatchdog.model_rebuild()
@@ -1635,6 +1644,73 @@ class BrowserSession(BaseModel):
 
 		# Return empty dict if nothing available
 		return {}
+
+	def get_network_requests(self, limit: int = 10, request_type: str | None = None) -> list[dict]:
+		"""Get recent network requests for agent analysis.
+
+		Args:
+			limit: Maximum number of requests to return
+			request_type: Filter by type ('api', 'ui', 'failed') or None for all
+		"""
+		if not self._network_watchdog:
+			return []
+
+		if request_type == 'api':
+			return self._network_watchdog.get_api_requests(limit)
+		elif request_type == 'ui':
+			return self._network_watchdog.get_ui_requests(limit)
+		elif request_type == 'failed':
+			return self._network_watchdog.get_failed_requests(limit)
+		else:
+			return self._network_watchdog.get_recent_requests(limit)
+
+	def get_network_summary(self) -> dict:
+		"""Get network activity summary for agent analysis."""
+		if not self._network_watchdog:
+			return {
+				'total_completed': 0,
+				'api_requests': 0,
+				'failed_requests': 0,
+				'active_requests': 0,
+				'success_rate': 0,
+			}
+		return self._network_watchdog.get_requests_summary()
+
+	def get_user_triggered_requests(self, limit: int = 10) -> list[dict]:
+		"""Get network requests that appear to be triggered by user interactions."""
+		if not self._network_watchdog:
+			return []
+		return self._network_watchdog.get_user_triggered_requests(limit)
+
+	def analyze_recent_user_activity(self, seconds_back: int = 30) -> dict:
+		"""Analyze recent network activity to understand user actions and their effects."""
+		if not self._network_watchdog:
+			return {
+				'time_window_seconds': seconds_back,
+				'total_requests': 0,
+				'user_triggered_requests': 0,
+				'api_calls': 0,
+				'failed_requests': 0,
+				'recent_user_actions': [],
+				'recent_api_calls': []
+			}
+		return self._network_watchdog.analyze_recent_user_action(seconds_back)
+
+	def get_requests_by_ui_section(self, section_pattern: str, limit: int = 10) -> list[dict]:
+		"""Get network requests from a specific UI section (e.g., 'header', 'sidebar', 'form')."""
+		if not self._network_watchdog:
+			return []
+		return self._network_watchdog.get_requests_by_ui_section(section_pattern, limit)
+
+	def get_ui_activity_summary(self) -> dict:
+		"""Get summary of network activity broken down by UI sections."""
+		if not self._network_watchdog:
+			return {
+				'total_sections': 0,
+				'section_breakdown': {},
+				'most_active_section': None
+			}
+		return self._network_watchdog.get_ui_section_summary()
 
 	async def remove_highlights(self) -> None:
 		"""Remove highlights from the page using CDP."""
